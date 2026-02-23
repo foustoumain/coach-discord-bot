@@ -210,10 +210,33 @@ async function generateWeekTab(tabName, mondayISO) {
   await applyCheckboxes(tabName);
 }
 
-async function ensureCalendarTabsUpToDate() {
+// ✅ Génère 2 semaines selon offsets
+async function generateWeeks(currentOffsetWeeks, nextOffsetWeeks) {
   await ensureSheetExists(TAB_HISTORY);
-  await generateWeekTab(TAB_CURRENT, weekMondayISO(0));
-  await generateWeekTab(TAB_NEXT, weekMondayISO(1));
+  await generateWeekTab(TAB_CURRENT, weekMondayISO(currentOffsetWeeks));
+  await generateWeekTab(TAB_NEXT, weekMondayISO(nextOffsetWeeks));
+}
+
+// ✅ Usage normal : semaine courante + semaine à venir
+async function ensureCalendarTabsUpToDate() {
+  await generateWeeks(0, 1);
+}
+
+// ✅ Ne régénère que si onglets absents (pour ne pas effacer les coches au redémarrage)
+async function ensureTabsExistOrCreate() {
+  const meta = await getSpreadsheetMeta();
+  const titles = (meta.data.sheets || []).map(s => s.properties?.title).filter(Boolean);
+
+  const hasCur = titles.includes(TAB_CURRENT);
+  const hasNxt = titles.includes(TAB_NEXT);
+  const hasHis = titles.includes(TAB_HISTORY);
+
+  if (!hasHis) await ensureSheetExists(TAB_HISTORY);
+
+  // Si l’un manque, on crée tout proprement
+  if (!hasCur || !hasNxt) {
+    await generateWeeks(0, 1);
+  }
 }
 
 // ================= EMBEDS =================
@@ -235,7 +258,6 @@ function computeAvailableDays(tabData, isCurrentWeek) {
     const dayName = header.split(' ')[0];
     const dayISO = (isoHeader[col] || '').trim();
 
-    // semaine en cours: jour entièrement passé => pas de bouton
     if (isCurrentWeek) {
       const dayEnd = DateTime.fromISO(dayISO, { zone: TZ }).endOf('day');
       if (dayEnd < now) {
@@ -283,7 +305,6 @@ function buildPlanningText(tabData, isCurrentWeek) {
     const dayName = header.split(' ')[0];
     const dayISO = (isoHeader[col] || '').trim();
 
-    // semaine en cours: cacher les jours déjà passés
     if (isCurrentWeek) {
       const dayEnd = DateTime.fromISO(dayISO, { zone: TZ }).endOf('day');
       if (dayEnd < now) continue;
@@ -297,7 +318,6 @@ function buildPlanningText(tabData, isCurrentWeek) {
       if (!hour) continue;
       if (!isAvailableCell(cell)) continue;
 
-      // semaine en cours: cacher les heures déjà passées
       if (isCurrentWeek) {
         const slotDT = slotDateTimeParis(dayISO, hour);
         if (slotDT < now) continue;
@@ -488,11 +508,9 @@ async function safeEditOrSend(currentMsg, channel, payload) {
 async function refreshAll() {
   const channel = await client.channels.fetch(process.env.CHANNEL_ID);
 
-  // on lit les datas une fois
   const curData = await getTabData(TAB_CURRENT);
   const nxtData = await getTabData(TAB_NEXT);
 
-  // jours avec au moins 1 créneau affichable => boutons
   const curInfo = computeAvailableDays(curData, true);
   const nxtInfo = computeAvailableDays(nxtData, false);
 
@@ -531,7 +549,6 @@ function isAdminOrManager(interaction) {
 }
 
 client.on('interactionCreate', async (interaction) => {
-  // 📜 Historique
   if (interaction.isButton() && interaction.customId === 'historique') {
     const history = await getHistoryRows();
     const last = history.slice(-30);
@@ -549,7 +566,6 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
-  // 🔄 Refresh manuel
   if (interaction.isButton() && interaction.customId === 'refresh_manual') {
     if (!isAdminOrManager(interaction)) {
       return interaction.reply({ content: "⛔ Tu n'as pas la permission d'utiliser ce bouton.", ephemeral: true });
@@ -565,7 +581,6 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // Choix jour
   if (interaction.isButton() && (interaction.customId.startsWith('cur_') || interaction.customId.startsWith('nxt_'))) {
     const [weekKey, dayName] = interaction.customId.split('_');
     const tabName = weekKey === 'cur' ? TAB_CURRENT : TAB_NEXT;
@@ -619,7 +634,6 @@ client.on('interactionCreate', async (interaction) => {
     });
   }
 
-  // Réservation (silencieuse)
   if (interaction.isStringSelectMenu() && interaction.customId === 'pick_slot') {
     await interaction.deferUpdate();
 
@@ -669,11 +683,13 @@ client.on('interactionCreate', async (interaction) => {
 
 // ================= CRON =================
 
+// ✅ Dimanche 23h: on bascule directement sur la semaine suivante
 cron.schedule('0 23 * * 0', async () => {
-  await ensureCalendarTabsUpToDate();
+  await generateWeeks(1, 2);
   await refreshAll();
 }, { timezone: TZ });
 
+// Refresh toutes les heures
 cron.schedule('0 * * * *', async () => {
   console.log('🔄 Refresh automatique (horaire)');
   await refreshAll();
@@ -685,7 +701,9 @@ async function onReady() {
   console.log(`✅ Bot connecté en tant que ${client.user.tag}`);
   const channel = await client.channels.fetch(process.env.CHANNEL_ID);
 
-  await ensureCalendarTabsUpToDate();
+  // ✅ Ne détruit pas les coches au redémarrage
+  await ensureTabsExistOrCreate();
+
   await ensurePlanningOrderAndDedupe(channel);
   await refreshAll();
 }
