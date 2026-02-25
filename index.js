@@ -232,7 +232,7 @@ async function ensureTabsExistOrCreate() {
   }
 }
 
-// ✅ Copie “Semaine_Avenir” -> “Semaine_Courante” (en gardant les coches)
+// ✅ Copie Semaine_Avenir -> Semaine_Courante (en gardant les coches)
 async function copyTab(fromTab, toTab) {
   const values = await getTabData(fromTab);
   await ensureSheetExists(toTab);
@@ -245,13 +245,43 @@ async function copyTab(fromTab, toTab) {
 
 // ✅ Rotation OFFICIELLE : Lundi 00:00
 async function rotateWeeksMonday0000() {
-  // 1) Next -> Current (les coches du coach restent)
+  // 1) Next -> Current (les coches restent)
   await copyTab(TAB_NEXT, TAB_CURRENT);
 
-  // 2) Générer une nouvelle semaine à venir = semaine suivante
-  // À lundi 00:00 : weekMondayISO(0) = lundi d’aujourd’hui (nouvelle semaine)
-  // Donc la semaine à venir doit être weekMondayISO(1)
+  // 2) Génère une nouvelle semaine à venir = semaine suivante
   await generateWeekTab(TAB_NEXT, weekMondayISO(1));
+}
+
+// ✅ Rattrapage automatique si le bot a raté une rotation
+function parseMondayFromTabData(tabData) {
+  if (!tabData || tabData.length < 2) return null;
+  const mondayISO = (tabData[1]?.[1] || '').trim(); // ISO row, col B
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(mondayISO)) return null;
+  return mondayISO;
+}
+
+async function catchUpWeeksIfNeeded() {
+  const expectedMonday = weekMondayISO(0);
+  const curData = await getTabData(TAB_CURRENT);
+  const curMonday = parseMondayFromTabData(curData);
+  if (!curMonday) return;
+
+  let cur = DateTime.fromISO(curMonday, { zone: TZ });
+  const exp = DateTime.fromISO(expectedMonday, { zone: TZ });
+
+  let guard = 0;
+  while (cur < exp && guard < 6) {
+    // Next -> Current
+    await copyTab(TAB_NEXT, TAB_CURRENT);
+
+    // Next = semaine suivante du nouveau current
+    const newCurrentMondayISO = cur.plus({ weeks: 1 }).toISODate();
+    const newNextMondayISO = DateTime.fromISO(newCurrentMondayISO, { zone: TZ }).plus({ weeks: 1 }).toISODate();
+    await generateWeekTab(TAB_NEXT, newNextMondayISO);
+
+    cur = cur.plus({ weeks: 1 });
+    guard++;
+  }
 }
 
 // ================= EMBEDS =================
@@ -698,7 +728,7 @@ client.on('interactionCreate', async (interaction) => {
 
 // ================= CRON =================
 
-// ✅ Lundi 00:00 : Semaine_Avenir -> Semaine_Courante, puis régénère Semaine_Avenir
+// ✅ Lundi 00:00 : bascule (Next -> Current) et régénération automatique de Next
 cron.schedule('0 0 * * 1', async () => {
   await rotateWeeksMonday0000();
   await refreshAll();
@@ -716,8 +746,10 @@ async function onReady() {
   console.log(`✅ Bot connecté en tant que ${client.user.tag}`);
   const channel = await client.channels.fetch(process.env.CHANNEL_ID);
 
-  // ✅ Ne détruit pas les coches au redémarrage
   await ensureTabsExistOrCreate();
+
+  // ✅ corrige les onglets si ils sont en retard
+  await catchUpWeeksIfNeeded();
 
   await ensurePlanningOrderAndDedupe(channel);
   await refreshAll();
