@@ -210,19 +210,13 @@ async function generateWeekTab(tabName, mondayISO) {
   await applyCheckboxes(tabName);
 }
 
-// ✅ Génère 2 semaines selon offsets
 async function generateWeeks(currentOffsetWeeks, nextOffsetWeeks) {
   await ensureSheetExists(TAB_HISTORY);
   await generateWeekTab(TAB_CURRENT, weekMondayISO(currentOffsetWeeks));
   await generateWeekTab(TAB_NEXT, weekMondayISO(nextOffsetWeeks));
 }
 
-// ✅ Usage normal : semaine courante + semaine à venir
-async function ensureCalendarTabsUpToDate() {
-  await generateWeeks(0, 1);
-}
-
-// ✅ Ne régénère que si onglets absents (pour ne pas effacer les coches au redémarrage)
+// ✅ Crée les onglets si absents (sinon ne touche à rien)
 async function ensureTabsExistOrCreate() {
   const meta = await getSpreadsheetMeta();
   const titles = (meta.data.sheets || []).map(s => s.properties?.title).filter(Boolean);
@@ -233,10 +227,31 @@ async function ensureTabsExistOrCreate() {
 
   if (!hasHis) await ensureSheetExists(TAB_HISTORY);
 
-  // Si l’un manque, on crée tout proprement
   if (!hasCur || !hasNxt) {
     await generateWeeks(0, 1);
   }
+}
+
+// ✅ Copie “Semaine_Avenir” -> “Semaine_Courante” (en gardant les coches)
+async function copyTab(fromTab, toTab) {
+  const values = await getTabData(fromTab);
+  await ensureSheetExists(toTab);
+  await clearRange(`${toTab}!A1:H200`);
+  if (values.length) {
+    await writeRange(`${toTab}!A1:H${values.length}`, values);
+  }
+  await applyCheckboxes(toTab);
+}
+
+// ✅ Rotation OFFICIELLE : Lundi 00:00
+async function rotateWeeksMonday0000() {
+  // 1) Next -> Current (les coches du coach restent)
+  await copyTab(TAB_NEXT, TAB_CURRENT);
+
+  // 2) Générer une nouvelle semaine à venir = semaine suivante
+  // À lundi 00:00 : weekMondayISO(0) = lundi d’aujourd’hui (nouvelle semaine)
+  // Donc la semaine à venir doit être weekMondayISO(1)
+  await generateWeekTab(TAB_NEXT, weekMondayISO(1));
 }
 
 // ================= EMBEDS =================
@@ -683,9 +698,9 @@ client.on('interactionCreate', async (interaction) => {
 
 // ================= CRON =================
 
-// ✅ Dimanche 23h: on bascule directement sur la semaine suivante
-cron.schedule('0 23 * * 0', async () => {
-  await generateWeeks(1, 2);
+// ✅ Lundi 00:00 : Semaine_Avenir -> Semaine_Courante, puis régénère Semaine_Avenir
+cron.schedule('0 0 * * 1', async () => {
+  await rotateWeeksMonday0000();
   await refreshAll();
 }, { timezone: TZ });
 
