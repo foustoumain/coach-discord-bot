@@ -167,26 +167,35 @@ async function applyCheckboxes(tabName) {
   const sheetId = await getSheetIdByTitle(tabName);
   if (sheetId === null) throw new Error(`SheetId introuvable pour ${tabName}`);
 
+  // Range B3:H16 (0-indexed)
+  const range = {
+    sheetId,
+    startRowIndex: 2,     // row 3
+    endRowIndex: 16,      // up to row 16
+    startColumnIndex: 1,  // col B
+    endColumnIndex: 8,    // up to col H
+  };
+
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
     requestBody: {
-      requests: [{
-        setDataValidation: {
-          range: {
-            sheetId,
-            startRowIndex: 2,     // row 3
-            endRowIndex: 16,      // row 16 end exclusive => couvre 3..16
-            startColumnIndex: 1,  // col B
-            endColumnIndex: 8,    // col H end exclusive
+      requests: [
+        {
+          repeatCell: {
+            range,
+            cell: {
+              dataValidation: {
+                condition: { type: 'BOOLEAN' },
+                showCustomUi: true,
+                strict: true,
+              },
+              userEnteredValue: { boolValue: false }, // ✅ unchecked checkbox
+            },
+            fields: 'dataValidation,userEnteredValue',
           },
-          rule: {
-            condition: { type: 'BOOLEAN' },
-            showCustomUi: true,
-            strict: true,
-          }
-        }
-      }]
-    }
+        },
+      ],
+    },
   });
 }
 
