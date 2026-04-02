@@ -424,6 +424,7 @@ function clampList(lines, max = 30) {
 async function buildReservationsEmbed() {
   const history = await getHistoryRows();
   const items = [];
+  const now = nowParis();
 
   for (const r of history) {
     const ddmm = (r[0] || '').trim();
@@ -431,7 +432,11 @@ async function buildReservationsEmbed() {
     const day = (r[2] || '').trim();
     const user = (r[3] || '').trim();
     const slotISO = (r[5] || '').trim();
+
     if (!/^\d{4}-\d{2}-\d{2}$/.test(slotISO)) continue;
+
+    const slotDT = slotDateTimeParis(slotISO, hour);
+    if (slotDT < now) continue; // masque les réservations passées
 
     items.push({
       slotISO,
@@ -447,10 +452,11 @@ async function buildReservationsEmbed() {
   return new EmbedBuilder()
     .setTitle('📌 Réservations')
     .setColor(0x2ecc71)
-    .setDescription((clamped.text || 'Aucune réservation.') + (clamped.extra ? `\n… +${clamped.extra} autres` : ''))
+    .setDescription((clamped.text || 'Aucune réservation à venir.') + (clamped.extra ? `\n… +${clamped.extra} autres` : ''))
     .setTimestamp()
     .setFooter({ text: '📜 Historique global via le bouton.' });
 }
+
 
 // ================= BUTTONS =================
 
@@ -620,20 +626,28 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
-  if (interaction.isButton() && interaction.customId === 'refresh_manual') {
-    if (!isAdminOrManager(interaction)) {
-      return interaction.reply({ content: "⛔ Tu n'as pas la permission d'utiliser ce bouton.", ephemeral: true });
-    }
-
+if (interaction.isButton() && interaction.customId === 'refresh_manual') {
+  try {
     await interaction.deferReply({ ephemeral: true });
     await refreshAll();
-    await interaction.editReply("✅ Refresh effectué.");
+    await interaction.editReply({ content: "✅ Refresh effectué." });
 
     setTimeout(async () => {
       try { await interaction.deleteReply(); } catch {}
     }, 2500);
-    return;
+  } catch (err) {
+    console.error('❌ Erreur refresh_manual:', err);
+
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: "❌ Le refresh a échoué. Regarde les logs du bot." });
+      } else {
+        await interaction.reply({ content: "❌ Le refresh a échoué. Regarde les logs du bot.", ephemeral: true });
+      }
+    } catch {}
   }
+  return;
+}
 
   if (interaction.isButton() && (interaction.customId.startsWith('cur_') || interaction.customId.startsWith('nxt_'))) {
     const [weekKey, dayName] = interaction.customId.split('_');
